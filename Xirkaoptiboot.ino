@@ -3,6 +3,7 @@
 //int k;
 //char ch;
 
+//-xirka optiboot--
 
 #define OPTIBOOT_MAJVER 4
 #define OPTIBOOT_MINVER 4
