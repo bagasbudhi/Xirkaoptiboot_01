@@ -176,19 +176,20 @@ void __attribute__ ((long_call, section(".data.data_begin"))) setup(void) {
       ch = 0; //Pagesize / 2;
       do{
         // Program
-//        Serial.println("Programming Sector...");
-//        __disable_irq();
-//        while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
-//        for(int i=0; i<256; i++){
-//        *(uint8_t *)(0x2000+i) = (uint8_t) ~i;
-//        while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
-//        }
-//        __enable_irq();
+//        
         *addrPtr = *bufPtr;
         bufPtr++;
         addrPtr++;
       }while(--ch);
 
+      Serial1.println("Programming Sector...");
+       __disable_irq();
+       while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
+       for(int i=0; i<256; i++){
+       *(uint8_t *)(0x2000+i) = (uint8_t) ~i;
+       while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
+       }
+       __enable_irq();
         
       }
 
