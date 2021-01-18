@@ -137,18 +137,19 @@ void __attribute__ ((long_call, section(".data.data_begin"))) setup(void) {
       while (--length);
 
       // Read command terminator, start reply
-      verifySpace();
       
-//      Serial.println("Erasing Sector 0x2000...");
-//      __disable_irq();
-//      while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
-//      FLASHCTRL->CONTROL |= FLASH_CTRL_INTERASE_Msk;         // Enable erase mode
-//      (*(uint8_t *) 0x2000) = 0x30;                           // Erase address 0x2000
-//      FLASHCTRL->CONTROL &= ~FLASH_CTRL_INTERASE_Msk;        // Disable erase mode
-//      while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until erase completed
-//      //for(volatile int i=0; i<0xFFFFF; i++);
-//      __enable_irq();
-//      Serial.println("Erase Done!");
+     Serial1.println("Erasing Sector 0x2000...");
+     __disable_irq();
+     while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
+     FLASHCTRL->CONTROL |= FLASH_CTRL_INTERASE_Msk;         // Enable erase mode
+     (*(uint8_t *) 0x2000) = 0x30;                           // Erase address 0x2000
+     FLASHCTRL->CONTROL &= ~FLASH_CTRL_INTERASE_Msk;        // Disable erase mode
+     while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until erase completed
+     //for(volatile int i=0; i<0xFFFFF; i++);
+     __enable_irq();
+     Serial1.println("Erase Done!");
+
+     verifySpace();
 
 //      #ifdef VIRTUAL_BOOT_PARTITION
 //      if ((uint16_t)(void*)address == 0) {
