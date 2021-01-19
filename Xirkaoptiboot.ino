@@ -5,6 +5,8 @@
 
 //-xirka optiboot--
 
+#define userAppStartAddr ((uint32_t *)0x2000UL)
+
 #define OPTIBOOT_MAJVER 4
 #define OPTIBOOT_MINVER 4
 
@@ -30,7 +32,7 @@
 
 
 //#define F_CPU 8000000L
-#define F_CPU FOSC
+//#define F_CPU FOSC
 #define BAUD_RATE 115200L
 
 //#if (F_CPU/BAUD_RATE) > 280
@@ -39,7 +41,8 @@
 //#endif
 //#endif
 
-uint8_t flash[(32UL<<10)];
+//uint8_t flash[(32UL<<10)];
+#define flash ((volatile uint8_t*)0x0)
 uint8_t buff[256];
 
 void putch(char);
@@ -52,8 +55,32 @@ uint8_t getch(void);
 
 //void appStart() __attribute__ ((naked));
 
+void __attribute__ ((naked)) BootJumpASM(uint32_t __attribute__((unused)) SP, uint32_t __attribute__((unused)) RH){
+  asm volatile (
+      "MSR      MSP,r0 \n"
+      "BX       r1"
+  );
+}
 
+void BootJump(uint32_t *Address){
 
+  if(CONTROL_nPRIV_Msk & __get_CONTROL())
+    svc(0);
+
+  if(CONTROL_SPSEL_Msk & __get_CONTROL())
+  {  /* MSP is not active */
+    __set_MSP( __get_PSP( ) ) ;
+    __set_CONTROL( __get_CONTROL( ) & ~CONTROL_SPSEL_Msk ) ;
+  }
+
+  SCB->VTOR = (uint32_t)Address;
+
+  BootJumpASM(Address[0], Address[1]);
+}
+
+Handler SVC_Handler(void){
+  __set_CONTROL(__get_CONTROL() & ~CONTROL_nPRIV_Msk);
+}
 
 void __attribute__ ((long_call, section(".data.data_begin"))) setup(void) {
   
@@ -62,9 +89,15 @@ void __attribute__ ((long_call, section(".data.data_begin"))) setup(void) {
   register uint16_t address = 0; // alamat
   register uint8_t length;
 
-  //asm volatile ("clr __zero_reg__");
+  if(CMSDK_SYSCON->RSTINFO){
+    BootJump(userAppStartAddr);
+    while(1);
+  }
   
   Serial.begin(BAUD_RATE);
+  Serial2.begin(115200);
+  delay(1000);
+  Serial2.println("hello");
   
   for(;;) {
 
@@ -114,6 +147,8 @@ void __attribute__ ((long_call, section(".data.data_begin"))) setup(void) {
     #endif
       newAddress += newAddress;
       address = newAddress;
+      Serial2.print("0x");
+      Serial2.println(address, HEX);
       verifySpace();
       }
 
@@ -125,7 +160,7 @@ void __attribute__ ((long_call, section(".data.data_begin"))) setup(void) {
     else if(ch == STK_PROG_PAGE){
       
       uint8_t *bufPtr;
-      uint8_t *addrPtr;
+      volatile uint8_t *addrPtr;
 
       getch();
       length = getch();
@@ -137,17 +172,23 @@ void __attribute__ ((long_call, section(".data.data_begin"))) setup(void) {
       while (--length);
 
       // Read command terminator, start reply
-      
-     Serial1.println("Erasing Sector 0x2000...");
-     __disable_irq();
-     while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
-     FLASHCTRL->CONTROL |= FLASH_CTRL_INTERASE_Msk;         // Enable erase mode
-     (*(uint8_t *) 0x2000) = 0x30;                           // Erase address 0x2000
-     FLASHCTRL->CONTROL &= ~FLASH_CTRL_INTERASE_Msk;        // Disable erase mode
-     while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until erase completed
-     //for(volatile int i=0; i<0xFFFFF; i++);
-     __enable_irq();
-     Serial1.println("Erase Done!");
+
+      if((address & 0xFF) == 0){
+         Serial2.print("E 0x");
+         Serial2.print(address, HEX);
+         Serial2.flush();
+         __disable_irq();
+         while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
+         FLASHCTRL->CONTROL |= FLASH_CTRL_INTERASE_Msk;         // Enable erase mode
+         //(*(uint8_t *) 0x2000) = 0x30;                           // Erase address 0x2000
+         flash[address] = 0x30;
+         FLASHCTRL->CONTROL &= ~FLASH_CTRL_INTERASE_Msk;        // Disable erase mode
+         while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until erase completed
+         //for(volatile int i=0; i<0xFFFFF; i++);
+         __enable_irq();
+         Serial2.println(" !");
+       }
+     
 
      verifySpace();
 
@@ -171,27 +212,24 @@ void __attribute__ ((long_call, section(".data.data_begin"))) setup(void) {
 //      #endif
 
       // Write to flash
+      Serial2.print("P 0x");
+      Serial2.print(address, HEX);
+      Serial2.flush();
+      __disable_irq();
       bufPtr = buff;
       addrPtr = &flash[address];
-      ch = 0; //Pagesize / 2;
+      ch = length; //Pagesize / 2;
       do{
         // Program
 //        
         *addrPtr = *bufPtr;
+       while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
         bufPtr++;
         addrPtr++;
       }while(--ch);
-
-      Serial1.println("Programming Sector...");
-       __disable_irq();
-       while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
-       for(int i=0; i<256; i++){
-       *(uint8_t *)(0x2000+i) = (uint8_t) ~i;
-       while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
-       }
        __enable_irq();
         
-      }
+    }
 
     else if(ch == STK_READ_PAGE){
 
