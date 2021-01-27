@@ -2,7 +2,11 @@
 
 //-xirka optiboot--
 
-#define userAppStartAddr ((uint32_t *)0x2000UL)
+#define M8(adr)  (*((volatile unsigned char  *) (adr)))
+#define M16(adr) (*((volatile unsigned short *) (adr)))
+#define M32(adr) (*((volatile unsigned long  *) (adr)))
+
+#define userAppStartAddr ((uint32_t *)0x4000UL)
 
 #define OPTIBOOT_MAJVER 4
 #define OPTIBOOT_MINVER 4
@@ -28,6 +32,9 @@ uint8_t getch(void);
 //static inline void watchdogReset();
 //void watchdogConfig(uint8_t x);
 
+int __attribute__ ((long_call, section(".data.data_begin"))) EraseSector (unsigned long adr);
+int __attribute__ ((long_call, section(".data.data_begin"))) ProgramPage (unsigned long adr, unsigned long sz, unsigned char *buf);
+
 //void appStart() __attribute__ ((naked));
 
 void __attribute__ ((naked)) BootJumpASM(uint32_t __attribute__((unused)) SP, uint32_t __attribute__((unused)) RH){
@@ -38,6 +45,7 @@ void __attribute__ ((naked)) BootJumpASM(uint32_t __attribute__((unused)) SP, ui
 }
 
 void BootJump(uint32_t *Address){
+  wdt_disable();
 
   if(CONTROL_nPRIV_Msk & __get_CONTROL())
     svc(0);
@@ -60,7 +68,7 @@ Handler SVC_Handler(void){
 void __attribute__ ((long_call, section(".data.data_begin"))) setup(void) {
   
   uint8_t ch;
-
+  
   register uint16_t address = 0; // alamat
   register uint8_t length;
 
@@ -74,7 +82,7 @@ void __attribute__ ((long_call, section(".data.data_begin"))) setup(void) {
   //delay(1);
   Serial2.println("hello");
 
-  wdt_enable(WDTO_2S);
+  wdt_enable(WDTO_1S);
   
   for(;;) {
 
@@ -126,6 +134,7 @@ void __attribute__ ((long_call, section(".data.data_begin"))) setup(void) {
       
       uint8_t *bufPtr;
       volatile uint8_t *addrPtr;
+      
 
       getch();
       length = getch();
@@ -133,27 +142,44 @@ void __attribute__ ((long_call, section(".data.data_begin"))) setup(void) {
 
       // While that is going on, read in page contents
       bufPtr = buff;
+      ch = length;
       do *bufPtr++ = getch();
-      while (--length);
+      while (--ch);
 
-      // Read command terminator, start reply
+      Init();
 
-      if((address & 0xFF) == 0){
+      bool sectorBoundary = false;
+    if(FLASHCTRL->STATUS & FLASH_STAT_FLCFG_Msk){ // Booted from internal flash
+      if((address & 0xFF) == 0) sectorBoundary = true;
+    }
+    else {
+      if((address == 0x4000) || (address == 0x6000) || (address == 0x8000) || ((address & 0xFFFF) == 0))
+        sectorBoundary = true;
+    }
+    
+      if(sectorBoundary)
+        {
          Serial2.print("E 0x");
          Serial2.print(address, HEX);
          Serial2.flush();
-         __disable_irq();
-         while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
-         FLASHCTRL->CONTROL |= FLASH_CTRL_INTERASE_Msk;         // Enable erase mode
-         //(*(uint8_t *) 0x2000) = 0x30;                           // Erase address 0x2000
-         flash[address] = 0x30;
-         FLASHCTRL->CONTROL &= ~FLASH_CTRL_INTERASE_Msk;        // Disable erase mode
-         while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until erase completed
-         __enable_irq();
+
+         
+        __disable_irq();
+//          while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
+//          FLASHCTRL->CONTROL |= FLASH_CTRL_INTERASE_Msk;         // Enable erase mode
+//          //(*(uint8_t *) 0x2000) = 0x30;                           // Erase address 0x2000
+//          flash[address] = 0x30;
+//          FLASHCTRL->CONTROL &= ~FLASH_CTRL_INTERASE_Msk;        // Disable erase mode
+//          while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until erase completed
+         EraseSector (address);
+        __enable_irq();
          Serial2.println(" !");
        }
+      
+    
+      
      
-
+     // Read command terminator, start reply
      verifySpace();
 
       // Write to flash
@@ -164,15 +190,20 @@ void __attribute__ ((long_call, section(".data.data_begin"))) setup(void) {
       bufPtr = buff;
       addrPtr = &flash[address];
       ch = length; //Pagesize / 2;
-      do{
-        // Program
-        *addrPtr = *bufPtr;
-       while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
-        bufPtr++;
-        addrPtr++;
-      }while(--ch);
-       __enable_irq();
-        
+//       do{
+//         // Program
+//         *addrPtr = *bufPtr;
+//        while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
+//         bufPtr++;
+//         addrPtr++;
+//       }while(--ch);
+      wdt_reset();
+      ProgramPage(address, ch, bufPtr); 
+      
+      __enable_irq();
+
+      UnInit();       
+      Serial2.println(" !");
     }
 
     else if(ch == STK_READ_PAGE){
@@ -183,14 +214,18 @@ void __attribute__ ((long_call, section(".data.data_begin"))) setup(void) {
 
       verifySpace();
       
-       //Serial.println("Disabling Cache...");
-       __disable_irq();
+//       //Serial.println("Disabling Cache...");
+//       __disable_irq();
        if((CMSDK_CACHE->SR & CMSDK_CACHE_SR_CS_Msk) == (0b10 << CMSDK_CACHE_SR_CS_Pos))
        CMSDK_CACHE->CCR &=  ~CMSDK_CACHE_CCR_EN_Msk; // Disable cache
        while ((CMSDK_CACHE->SR & CMSDK_CACHE_SR_CS_Msk) != (0b00 << CMSDK_CACHE_SR_CS_Pos)); // Wait until cache is disabled
-       __enable_irq();
+//       __enable_irq();
         
         do {
+//          Serial2.print("0x");
+//          Serial2.print(address, HEX);
+//          Serial2.print("=0x");
+//          Serial2.println(flash[address],HEX);
           putch(flash[address++]);
         }
         while (--length);
@@ -245,4 +280,82 @@ void verifySpace() {
     while(1);
   }
  putch(STK_INSYNC);
+}
+
+int Init (void) {
+	//CMSDK_WATCHDOG->LOCK = 0x1ACCE551;
+    //CMSDK_WATCHDOG->CTRL = 0;
+    if(FLASHCTRL->STATUS & FLASH_STAT_FLCFG_Msk){ // Booted from internal flash
+        // Turn off Cache
+
+        if((CMSDK_CACHE->SR & CMSDK_CACHE_SR_CS_Msk) != (0 << CMSDK_CACHE_SR_CS_Pos))
+            CMSDK_CACHE->CCR &=  ~CMSDK_CACHE_CCR_EN_Msk; // Disable cache
+        while ((CMSDK_CACHE->SR & CMSDK_CACHE_SR_CS_Msk) != (0 << CMSDK_CACHE_SR_CS_Pos)); // Wait until cache is disabled
+    } else { // External Flash
+        FLASHCTRL->CONTROL |= FLASH_CTRL_EXTWREN_Msk | FLASH_CTRL_EXTWAITWR_Msk | FLASH_CTRL_EXTWAITRD_Msk | FLASH_CTRL_WAITRES_Msk;
+    }
+    
+    return (0);                                  // Finished without Errors
+}
+
+int UnInit (void) {
+    if(!(FLASHCTRL->STATUS & FLASH_STAT_FLCFG_Msk)) // External Flash
+        FLASHCTRL->CONTROL &= ~FLASH_CTRL_EXTWREN_Msk;
+    return (0);                                  // Finished without Errors
+}
+
+int __attribute__ ((long_call, section(".data.data_begin"))) ProgramPage (unsigned long adr, unsigned long sz, unsigned char *buf) {
+    int stopAddr = adr+sz;
+	// CMSDK_WATCHDOG->LOCK = 0x1ACCE551;
+  //   CMSDK_WATCHDOG->CTRL = 0;
+    if(FLASHCTRL->STATUS & FLASH_STAT_FLCFG_Msk){ // Internal Flash
+        while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
+        for(; adr<stopAddr; adr++){
+            M8(adr) = M8(buf);
+            buf++;
+            while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
+        }
+    } else { // External Flash
+        while (!(FLASHCTRL->STATUS & FLASH_STAT_EXTRY_Msk)); // Wait until ready
+        for(; adr<stopAddr; adr+=2){
+            M16(0x555<<1) = 0xAA;
+            M16(0x2AA<<1) = 0x55;
+            M16(0x555<<1) = 0xA0;
+            M16(adr     ) = M16(buf);
+            buf += 2;
+            while (FLASHCTRL->STATUS & FLASH_STAT_EXTRY_Msk);    // Wait until start processing
+            while (!(FLASHCTRL->STATUS & FLASH_STAT_EXTRY_Msk)); // Wait until ready
+        }
+    }
+    
+    return (0);                                  // Finished without Errors
+}
+
+int __attribute__ ((long_call, section(".data.data_begin"))) EraseSector (unsigned long adr) {
+    int i=0;
+	// CMSDK_WATCHDOG->LOCK = 0x1ACCE551;
+  //   CMSDK_WATCHDOG->CTRL = 0;
+    if(FLASHCTRL->STATUS & FLASH_STAT_FLCFG_Msk){ // Internal Flash
+        // 4 kB erase on 256 byte sectors
+        //for(i=0; i<((4<<10)/256); i++){
+            while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until ready
+            FLASHCTRL->CONTROL |= FLASH_CTRL_INTERASE_Msk;         // Enable erase mode
+            M8(adr/*+(i*256)*/) = 0x30;                                // Sector erase
+            FLASHCTRL->CONTROL &= ~FLASH_CTRL_INTERASE_Msk;        // Disable erase mode
+            while(!(FLASHCTRL->STATUS & FLASH_STAT_INTREADY_Msk)); // Wait until erase completed
+        //}
+    } else { // External Flash
+        while (!(FLASHCTRL->STATUS & FLASH_STAT_EXTRY_Msk)); // Wait until ready
+        // Start Chip Erase Command
+        M16(0x555<<1) = 0xAA;
+        M16(0x2AA<<1) = 0x55;
+        M16(0x555<<1) = 0x80;
+        M16(0x555<<1) = 0xAA;
+        M16(0x2AA<<1) = 0x55;
+        M16(adr     ) = 0x30;
+        while (FLASHCTRL->STATUS & FLASH_STAT_EXTRY_Msk);    // Wait until start processing
+        while (!(FLASHCTRL->STATUS & FLASH_STAT_EXTRY_Msk)); // Wait until erase completed
+    }
+    
+    return (0);                                  // Finished without Errors
 }
